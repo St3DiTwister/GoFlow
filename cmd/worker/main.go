@@ -7,30 +7,58 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/joho/godotenv"
 	"log"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
 	"time"
 )
 
 func main() {
-	brokers := []string{"localhost:9092"}
+	if err := godotenv.Load(); err != nil {
+		log.Println("No .env file found, using system env")
+	}
 
-	topic := "telemetry"
+	chStorage, err := storage.NewClickHouseStorage(
+		fmt.Sprintf("localhost:%s", os.Getenv("CH_PORT_TCP")),
+		os.Getenv("CH_USER"),
+		os.Getenv("CH_PASSWORD"),
+		os.Getenv("CH_DB"),
+	)
+	if err != nil {
+		log.Fatalf("ClickHouse error: %v", err)
+	}
+
+	brokers := []string{os.Getenv("KAFKA_BROKER")}
+	topic := os.Getenv("KAFKA_TOPIC")
 	groupID := "event-processor-v1"
-
 	consumer := kafka.NewConsumer(brokers, topic, groupID)
-	defer consumer.Close()
-
-	chStorage, _ := storage.NewClickHouseStorage("localhost:9000")
 
 	eventsChan := make(chan model.Event, 1000)
 
+	var wg sync.WaitGroup
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		batch := make([]model.Event, 0, 1000)
 		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
 
 		for {
 			select {
-			case event := <-eventsChan:
+			case event, ok := <-eventsChan:
+				if !ok {
+					if len(batch) > 0 {
+						flush(chStorage, &batch)
+					}
+					return
+				}
 				batch = append(batch, event)
 				if len(batch) >= 1000 {
 					flush(chStorage, &batch)
@@ -46,20 +74,51 @@ func main() {
 
 	fmt.Println("Worker started. Reading Kafka...")
 
+Loop:
 	for {
-		msg, err := consumer.ReadMessage(context.Background())
-		if err != nil {
-			log.Printf("Kafka read error: %v", err)
-			continue
-		}
+		select {
+		case <-ctx.Done():
+			fmt.Println("\nShutting down gracefully...")
+			break Loop
+		default:
+			readCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+			msg, err := consumer.ReadMessage(readCtx)
+			cancel()
 
-		var event model.Event
-		if err := json.Unmarshal(msg.Value, &event); err != nil {
-			log.Printf("Unmarshal error: %v", err)
-			continue
-		}
+			if err != nil {
+				continue
+			}
 
-		eventsChan <- event
+			var event model.Event
+			if err := json.Unmarshal(msg.Value, &event); err == nil {
+				eventsChan <- event
+			}
+		}
+	}
+	close(eventsChan)
+
+	if err := consumer.Close(); err != nil {
+		log.Printf("Error closing Kafka consumer: %v", err)
+	}
+
+	if err := chStorage.Close(); err != nil {
+		log.Printf("ClickHouse connection close error: %v", err)
+	}
+
+	waitCtx, timeout := context.WithTimeout(context.Background(), 10*time.Second)
+	defer timeout()
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		fmt.Println("Worker stopped cleanly.")
+	case <-waitCtx.Done():
+		fmt.Println("Shutdown timed out, some data might be lost.")
 	}
 }
 

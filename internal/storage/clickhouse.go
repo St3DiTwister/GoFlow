@@ -11,13 +11,13 @@ type ClickHouseStorage struct {
 	conn clickhouse.Conn
 }
 
-func NewClickHouseStorage(addr string) (*ClickHouseStorage, error) {
+func NewClickHouseStorage(addr, user, password, db string) (*ClickHouseStorage, error) {
 	conn, err := clickhouse.Open(&clickhouse.Options{
 		Addr: []string{addr},
 		Auth: clickhouse.Auth{
-			Database: "default",
-			Username: "admin",
-			Password: "admin",
+			Database: db,
+			Username: user,
+			Password: password,
 		},
 		Settings: clickhouse.Settings{
 			"max_execution_time": 60,
@@ -53,4 +53,8 @@ func (s *ClickHouseStorage) InsertEvents(ctx context.Context, events []model.Eve
 	}
 
 	return batch.Send()
+}
+
+func (s *ClickHouseStorage) Close() error {
+	return s.conn.Close()
 }

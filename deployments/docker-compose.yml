@@ -33,13 +33,14 @@ services:
     image: clickhouse/clickhouse-server:23.8
     container_name: goflow-clickhouse
     ports:
-      - "8123:8123"
-      - "9000:9000"
+      - "${CH_PORT_HTTP}:8123"
+      - "${CH_PORT_TCP}:9000"
     volumes:
       - clickhouse_data:/var/lib/clickhouse
     environment:
-      CLICKHOUSE_USER: admin
-      CLICKHOUSE_PASSWORD: admin
+      CLICKHOUSE_USER: ${CH_USER}
+      CLICKHOUSE_PASSWORD: ${CH_PASSWORD}
+      CLICKHOUSE_DB: ${CH_DB}
     networks:
       - goflow-net
     ulimits:

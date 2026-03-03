@@ -61,8 +61,24 @@ services:
     networks:
       - goflow-net
 
+  postgres:
+    image: postgres:15-alpine
+    container_name: goflow-postgres
+    restart: unless-stopped
+    ports:
+      - "${PG_PORT}:5432"
+    environment:
+      POSTGRES_USER: ${PG_USER}
+      POSTGRES_PASSWORD: ${PG_PASSWORD}
+      POSTGRES_DB: ${PG_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - goflow-net
+
 volumes:
   clickhouse_data:
+  postgres_data:
 
 networks:
   goflow-net:

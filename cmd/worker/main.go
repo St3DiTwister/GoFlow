@@ -2,13 +2,16 @@ package main
 
 import (
 	"GoFlow/internal/kafka"
+	"GoFlow/internal/metrics"
 	"GoFlow/internal/model"
 	"GoFlow/internal/storage"
 	"context"
 	"encoding/json"
 	"fmt"
 	"github.com/joho/godotenv"
-	"log"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -32,28 +35,44 @@ type Config struct {
 }
 
 func main() {
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With(
+		slog.String("service", "goflow-worker"),
+		slog.String("env", "development"),
+	)
+	slog.SetDefault(logger)
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found, using system env")
+		slog.Warn("env_file_not_found", "using", "system_env")
 	}
+
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		slog.Info("metrics_server_started", "port", "9001")
+		if err := http.ListenAndServe(":9001", nil); err != nil {
+			slog.Error("metrics_server_failed", "error", err)
+		}
+	}()
 
 	app := &App{validSites: make(map[string]bool)}
 	if err := app.initStorages(ctx); err != nil {
-		log.Fatal("Init Storages Error:", err)
+		slog.Error("storage_init_failed", "error", err)
+		os.Exit(1)
 	}
 
 	var wg sync.WaitGroup
 	eventsChan := make(chan model.Event, 1000)
 
 	app.runCacheUpdater(ctx, &wg)
-
 	app.runClickHouseBatcher(ctx, &wg, eventsChan)
+
+	slog.Info("worker_started", "topic", os.Getenv("KAFKA_TOPIC"))
 
 	app.startConsumption(ctx, eventsChan)
 
-	fmt.Println("\nShutting down gracefully...")
+	slog.Info("shutdown_initiated")
 	close(eventsChan)
 	app.cleanup()
 
@@ -68,9 +87,9 @@ func main() {
 
 	select {
 	case <-done:
-		fmt.Println("Worker stopped cleanly.")
+		slog.Info("worker_stopped_cleanly")
 	case <-waitCtx.Done():
-		fmt.Println("Shutdown timed out, forcing exit.")
+		slog.Error("shutdown_timeout", "msg", "some_data_might_be_lost")
 	}
 }
 
@@ -86,7 +105,7 @@ func (a *App) initStorages(ctx context.Context) error {
 	)
 
 	if err != nil {
-		return err
+		return fmt.Errorf("clickhouse: %w", err)
 	}
 
 	// Postgres
@@ -94,7 +113,7 @@ func (a *App) initStorages(ctx context.Context) error {
 		os.Getenv("PG_USER"), os.Getenv("PG_PASSWORD"), os.Getenv("PG_PORT"), os.Getenv("PG_DB"))
 	a.pgStorage, err = storage.NewPostgresStorage(initCtx, pgConn)
 	if err != nil {
-		return err
+		return fmt.Errorf("postgres: %w", err)
 	}
 
 	// Kafka
@@ -117,7 +136,7 @@ func (a *App) runCacheUpdater(ctx context.Context, wg *sync.WaitGroup) {
 				updatesCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 				err := a.updateSitesCache(updatesCtx)
 				if err != nil {
-					log.Printf("Failed to update cache: %v", err)
+					slog.Error("cache_update_failed", "error", err)
 				}
 				cancel()
 			}
@@ -128,13 +147,12 @@ func (a *App) runCacheUpdater(ctx context.Context, wg *sync.WaitGroup) {
 func (a *App) updateSitesCache(ctx context.Context) error {
 	ids, err := a.pgStorage.GetValidSiteIDs(ctx)
 	if err != nil {
-		log.Printf("Cache update error: %v", err)
 		return err
 	}
 	a.sitesMu.Lock()
 	a.validSites = ids
 	a.sitesMu.Unlock()
-	log.Printf("Cache updated: %d sites", len(ids))
+	slog.Info("cache_updated", "active_sites", len(ids))
 	return nil
 }
 
@@ -170,7 +188,6 @@ func (a *App) runClickHouseBatcher(ctx context.Context, wg *sync.WaitGroup, ch <
 }
 
 func (a *App) startConsumption(ctx context.Context, eventsChan chan<- model.Event) {
-	fmt.Println("Worker started. Reading Kafka...")
 	for {
 		select {
 		case <-ctx.Done():
@@ -186,6 +203,7 @@ func (a *App) startConsumption(ctx context.Context, eventsChan chan<- model.Even
 
 			var event model.Event
 			if err := json.Unmarshal(msg.Value, &event); err != nil {
+				slog.Error("json_unmarshal_error", "error", err, "payload", string(msg.Value))
 				continue
 			}
 
@@ -194,7 +212,11 @@ func (a *App) startConsumption(ctx context.Context, eventsChan chan<- model.Even
 			a.sitesMu.RUnlock()
 
 			if isValid {
+				metrics.ProcessedEvents.Inc()
 				eventsChan <- event
+			} else {
+				metrics.InvalidEvents.Inc()
+				slog.Debug("invalid_site_id", "site_id", event.SiteID)
 			}
 		}
 	}
@@ -208,18 +230,21 @@ func (a *App) finalFlush(batch []model.Event) {
 	flushCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	start := time.Now()
 	if err := a.chStorage.InsertEvents(flushCtx, batch); err != nil {
-		log.Printf("Flush error: %v", err)
+		slog.Error("clickhouse_insert_failed", "error", err, "batch_size", len(batch))
+	} else {
+		metrics.ClickHouseInsertDuration.Observe(time.Since(start).Seconds())
+		slog.Info("batch_flushed", "count", len(batch))
 	}
-	log.Printf("Flushed %d events to ClickHouse", len(batch))
 }
 
 func (a *App) cleanup() {
 	if err := a.consumer.Close(); err != nil {
-		log.Printf("Kafka close error: %v", err)
+		slog.Error("kafka_close_failed", "error", err)
 	}
 	a.pgStorage.Close()
 	if err := a.chStorage.Close(); err != nil {
-		log.Printf("CH close error: %v", err)
+		slog.Error("clickhouse_close_failed", "error", err)
 	}
 }

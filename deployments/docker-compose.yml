@@ -76,6 +76,18 @@ services:
     networks:
       - goflow-net
 
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: goflow-prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - goflow-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
 volumes:
   clickhouse_data:
   postgres_data:

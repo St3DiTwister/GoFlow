@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"GoFlow/internal/gen/admin"
 	"context"
 	"fmt"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -56,6 +57,17 @@ func (s *PostgresStorage) GetValidSiteIDs(ctx context.Context) (map[string]bool,
 		ids[id] = true
 	}
 	return ids, nil
+}
+
+func (s *PostgresStorage) SaveSite(ctx context.Context, req *admin.RegisterSiteRequest, apiKey string) (string, error) {
+	var siteID string
+	query := "INSERT INTO sites (name, api_key) VALUES ($1, $2) RETURNING id"
+	err := s.Pool.QueryRow(ctx, query, req.Name, apiKey).Scan(&siteID)
+	if err != nil {
+		return "", err
+	} else {
+		return siteID, nil
+	}
 }
 
 func (s *PostgresStorage) Close() {

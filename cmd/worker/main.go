@@ -1,6 +1,7 @@
 package main
 
 import (
+	"GoFlow/internal/gen/admin"
 	"GoFlow/internal/kafka"
 	"GoFlow/internal/metrics"
 	"GoFlow/internal/model"
@@ -10,6 +11,8 @@ import (
 	"fmt"
 	"github.com/joho/godotenv"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"log/slog"
 	"net/http"
 	"os"
@@ -20,12 +23,13 @@ import (
 )
 
 type App struct {
-	config     *Config
-	chStorage  *storage.ClickHouseStorage
-	pgStorage  *storage.PostgresStorage
-	consumer   *kafka.Consumer
-	validSites map[string]bool
-	sitesMu    sync.RWMutex
+	config      *Config
+	chStorage   *storage.ClickHouseStorage
+	adminClient admin.AdminServiceClient
+	grpcConn    *grpc.ClientConn
+	consumer    *kafka.Consumer
+	validSites  map[string]bool
+	sitesMu     sync.RWMutex
 }
 
 type Config struct {
@@ -35,29 +39,39 @@ type Config struct {
 }
 
 func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With(
 		slog.String("service", "goflow-worker"),
 		slog.String("env", "development"),
 	)
 	slog.SetDefault(logger)
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	if err := godotenv.Load(); err != nil {
 		slog.Warn("env_file_not_found", "using", "system_env")
 	}
 
+	metricsPort := os.Getenv("WORKER_METRICS_PORT")
+	if metricsPort == "" {
+		metricsPort = "9001"
+	}
+
+	adminAddr := os.Getenv("ADMIN_GRPC_ADDR")
+	if adminAddr == "" {
+		adminAddr = "localhost:50051"
+	}
+
 	go func() {
 		http.Handle("/metrics", promhttp.Handler())
-		slog.Info("metrics_server_started", "port", "9001")
-		if err := http.ListenAndServe(":9001", nil); err != nil {
+		slog.Info("metrics_server_started", "port", metricsPort)
+		if err := http.ListenAndServe(":"+metricsPort, nil); err != nil {
 			slog.Error("metrics_server_failed", "error", err)
 		}
 	}()
 
 	app := &App{validSites: make(map[string]bool)}
-	if err := app.initStorages(ctx); err != nil {
+	if err := app.initStorages(ctx, adminAddr); err != nil {
 		slog.Error("storage_init_failed", "error", err)
 		os.Exit(1)
 	}
@@ -93,7 +107,7 @@ func main() {
 	}
 }
 
-func (a *App) initStorages(ctx context.Context) error {
+func (a *App) initStorages(ctx context.Context, adminAddr string) error {
 	initCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
@@ -108,13 +122,12 @@ func (a *App) initStorages(ctx context.Context) error {
 		return fmt.Errorf("clickhouse: %w", err)
 	}
 
-	// Postgres
-	pgConn := fmt.Sprintf("postgres://%s:%s@localhost:%s/%s",
-		os.Getenv("PG_USER"), os.Getenv("PG_PASSWORD"), os.Getenv("PG_PORT"), os.Getenv("PG_DB"))
-	a.pgStorage, err = storage.NewPostgresStorage(initCtx, pgConn)
+	conn, err := grpc.NewClient(adminAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
-		return fmt.Errorf("postgres: %w", err)
+		return fmt.Errorf("did not connect to admin service: %v", err)
 	}
+	a.adminClient = admin.NewAdminServiceClient(conn)
+	a.grpcConn = conn
 
 	// Kafka
 	a.consumer = kafka.NewConsumer([]string{os.Getenv("KAFKA_BROKER")}, os.Getenv("KAFKA_TOPIC"), "event-processor-v1")
@@ -145,18 +158,25 @@ func (a *App) runCacheUpdater(ctx context.Context, wg *sync.WaitGroup) {
 }
 
 func (a *App) updateSitesCache(ctx context.Context) error {
-	ids, err := a.pgStorage.GetValidSiteIDs(ctx)
+	resp, err := a.adminClient.GetValidSites(ctx, &admin.GetValidSitesRequest{})
 	if err != nil {
-		return err
+		return fmt.Errorf("grpc_get_valid_sites: %v", err)
 	}
+
+	newSites := make(map[string]bool)
+	for _, id := range resp.SiteIds {
+		newSites[id] = true
+	}
+
 	a.sitesMu.Lock()
-	a.validSites = ids
+	a.validSites = newSites
 	a.sitesMu.Unlock()
-	slog.Info("cache_updated", "active_sites", len(ids))
+
+	slog.Info("cache_updated_via_grpc", "count", len(newSites))
 	return nil
 }
 
-func (a *App) runClickHouseBatcher(ctx context.Context, wg *sync.WaitGroup, ch <-chan model.Event) {
+func (a *App) runClickHouseBatcher(_ context.Context, wg *sync.WaitGroup, ch <-chan model.Event) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -243,8 +263,10 @@ func (a *App) cleanup() {
 	if err := a.consumer.Close(); err != nil {
 		slog.Error("kafka_close_failed", "error", err)
 	}
-	a.pgStorage.Close()
 	if err := a.chStorage.Close(); err != nil {
 		slog.Error("clickhouse_close_failed", "error", err)
+	}
+	if err := a.grpcConn.Close(); err != nil {
+		slog.Error("grpc_close_failed", "error", err)
 	}
 }

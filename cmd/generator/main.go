@@ -24,7 +24,7 @@ type Event struct {
 var (
 	eventTypes = []string{"page_view", "click", "scroll", "form_submit"}
 	paths      = []string{"/", "/products", "/cart", "/checkout", "/pricing"}
-	siteIDs    = []string{"shop-vostok-1", "blog-daily-news", "saas-app-main"}
+	siteIDs    = []string{"fe1988f2-53b8-4505-90e1-29da5b8eeace", "b2744901-013f-4cf4-88da-1ea4d53d5248", "saas-app-main"}
 )
 
 func main() {
@@ -36,7 +36,7 @@ func main() {
 	fmt.Print("За сколько секунд их распределить? ")
 	fmt.Scan(&duration)
 
-	url := "http://localhost:8080/track"
+	url := "http://localhost:80/track"
 	delay := time.Duration(duration*1000/count) * time.Millisecond
 
 	fmt.Printf("🚀 Начинаю отправку %d запросов с задержкой %v...\n", count, delay)

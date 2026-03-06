@@ -4,4 +4,4 @@ global:
 scrape_configs:
   - job_name: 'goflow-worker'
     static_configs:
-      - targets: ['host.docker.internal:9001']
+      - targets: ['worker:9001']

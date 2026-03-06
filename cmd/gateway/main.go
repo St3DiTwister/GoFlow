@@ -6,13 +6,21 @@ import (
 	"GoFlow/internal/limiter"
 	"context"
 	"github.com/gin-gonic/gin"
+	"github.com/joho/godotenv"
+	"os"
 )
 
 func main() {
 	ctx := context.Background()
 	rateLimiter := limiter.NewIPRateLimiter(ctx, 5.0, 20)
 
-	prod := kafka.NewProducer("localhost:9092", "telemetry")
+	godotenv.Load()
+	kafkaAddr := os.Getenv("KAFKA_BROKER")
+	if kafkaAddr == "" {
+		kafkaAddr = "kafka:29092"
+	}
+
+	prod := kafka.NewProducer(kafkaAddr, "telemetry")
 	defer prod.Close()
 
 	r := gin.New()

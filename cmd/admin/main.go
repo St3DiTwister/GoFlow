@@ -28,8 +28,18 @@ func main() {
 
 	godotenv.Load()
 
-	pgConn := fmt.Sprintf("postgres://%s:%s@localhost:%s/%s",
-		os.Getenv("PG_USER"), os.Getenv("PG_PASSWORD"), os.Getenv("PG_PORT"), os.Getenv("PG_DB"))
+	pgHost := os.Getenv("PG_HOST")
+	if pgHost == "" {
+		pgHost = "postgres"
+	}
+
+	pgConn := fmt.Sprintf("postgres://%s:%s@%s:%s/%s",
+		os.Getenv("PG_USER"),
+		os.Getenv("PG_PASSWORD"),
+		pgHost,
+		os.Getenv("PG_PORT"),
+		os.Getenv("PG_DB"),
+	)
 
 	pg, err := storage.NewPostgresStorage(ctx, pgConn)
 	if err != nil {

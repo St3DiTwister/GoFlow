@@ -33,8 +33,8 @@ services:
     image: clickhouse/clickhouse-server:23.8
     container_name: goflow-clickhouse
     ports:
-      - "${CH_PORT_HTTP}:8123"
-      - "${CH_PORT_TCP}:9000"
+      - "8123:8123"
+      - "9000:9000"
     volumes:
       - clickhouse_data:/var/lib/clickhouse
     environment:
@@ -87,6 +87,97 @@ services:
       - goflow-net
     extra_hosts:
       - "host.docker.internal:host-gateway"
+
+  loki:
+    image: grafana/loki:latest
+    container_name: goflow-loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - goflow-net
+
+  alloy:
+    image: grafana/alloy:latest
+    container_name: goflow-alloy
+    volumes:
+      - ./alloy-config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: run --server.http.listen-addr=0.0.0.0:12345 /etc/alloy/config.alloy
+    depends_on:
+      - loki
+    networks:
+      - goflow-net
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: goflow-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    depends_on:
+      - prometheus
+      - loki
+    networks:
+      - goflow-net
+
+  admin-service:
+    build:
+      context: ..
+      dockerfile: deployments/admin.Dockerfile
+    container_name: goflow-admin
+    environment:
+      - PG_USER=${PG_USER}
+      - PG_PASSWORD=${PG_PASSWORD}
+      - PG_DB=${PG_DB}
+      - PG_PORT=5432
+      - ADMIN_GRPC_PORT=50051
+      - ADMIN_HTTP_PORT=8082
+    ports:
+      - "50051:50051"
+      - "8082:8082"
+    depends_on:
+      - postgres
+    networks:
+      - goflow-net
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deployments/worker.Dockerfile
+    container_name: goflow-worker
+    environment:
+      - KAFKA_BROKER=${KAFKA_BROKER}
+      - KAFKA_TOPIC=${KAFKA_TOPIC}
+      - CH_ADDR=${CH_ADDR}
+      - ADMIN_GRPC_ADDR=${ADMIN_GRPC_ADDR}
+      - WORKER_METRICS_PORT=${WORKER_METRICS_PORT}
+      - CH_USER=${CH_USER}
+      - CH_PASSWORD=${CH_PASSWORD}
+      - CH_DB=${CH_DB}
+    depends_on:
+      - kafka
+      - admin-service
+    networks:
+      - goflow-net
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: deployments/gateway.Dockerfile
+    container_name: goflow-gateway
+    ports:
+      - "80:8080"
+    environment:
+      - KAFKA_BROKERS=kafka:29092
+      - ADMIN_GRPC_ADDR=admin-service:50051
+      - APP_PORT=8080
+    depends_on:
+      - kafka
+      - admin-service
+    networks:
+      - goflow-net
 
 volumes:
   clickhouse_data:

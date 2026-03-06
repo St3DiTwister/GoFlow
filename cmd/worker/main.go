@@ -112,9 +112,13 @@ func (a *App) initStorages(ctx context.Context, adminAddr string) error {
 	defer cancel()
 
 	// ClickHouse
+	chAddr := os.Getenv("CH_ADDR")
+	if chAddr == "" {
+		chAddr = "localhost:9000"
+	}
 	var err error
 	a.chStorage, err = storage.NewClickHouseStorage(
-		fmt.Sprintf("localhost:%s", os.Getenv("CH_PORT_TCP")),
+		chAddr,
 		os.Getenv("CH_USER"), os.Getenv("CH_PASSWORD"), os.Getenv("CH_DB"),
 	)
 
@@ -236,7 +240,11 @@ func (a *App) startConsumption(ctx context.Context, eventsChan chan<- model.Even
 				eventsChan <- event
 			} else {
 				metrics.InvalidEvents.Inc()
-				slog.Debug("invalid_site_id", "site_id", event.SiteID)
+				slog.Warn("event_rejected_invalid_site",
+					"site_id", event.SiteID,
+					"event_type", event.Type,
+					"msg", "site_id not found in admin cache",
+				)
 			}
 		}
 	}

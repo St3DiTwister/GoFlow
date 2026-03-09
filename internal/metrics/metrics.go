@@ -8,17 +8,22 @@ import (
 var (
 	ProcessedEvents = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "goflow_worker_processed_events_total",
-		Help: "Total number of events processed by worker",
+		Help: "Total number of events successfully sent to ClickHouse",
 	})
 
-	InvalidEvents = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "goflow_worker_invalid_events_total",
-		Help: "Total number of events with invalid site_id",
-	})
+	RejectedEvents = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "goflow_worker_rejected_events_total",
+		Help: "Total number of events rejected by worker logic",
+	}, []string{"reason"})
+
+	SystemErrors = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "goflow_worker_errors_total",
+		Help: "Total number of technical errors in worker",
+	}, []string{"op"})
 
 	ClickHouseInsertDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "goflow_worker_ch_insert_duration_seconds",
 		Help:    "Duration of ClickHouse insert operations",
-		Buckets: []float64{0.1, 0.5, 1, 2, 5},
+		Buckets: []float64{0.01, 0.05, 0.1, 0.5, 1, 2, 5},
 	})
 )

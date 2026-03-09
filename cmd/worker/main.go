@@ -227,6 +227,7 @@ func (a *App) startConsumption(ctx context.Context, eventsChan chan<- model.Even
 
 			var event model.Event
 			if err := json.Unmarshal(msg.Value, &event); err != nil {
+				metrics.RejectedEvents.WithLabelValues("malformed_json").Inc()
 				slog.Error("json_unmarshal_error", "error", err, "payload", string(msg.Value))
 				continue
 			}
@@ -239,12 +240,7 @@ func (a *App) startConsumption(ctx context.Context, eventsChan chan<- model.Even
 				metrics.ProcessedEvents.Inc()
 				eventsChan <- event
 			} else {
-				metrics.InvalidEvents.Inc()
-				slog.Warn("event_rejected_invalid_site",
-					"site_id", event.SiteID,
-					"event_type", event.Type,
-					"msg", "site_id not found in admin cache",
-				)
+				metrics.RejectedEvents.WithLabelValues("invalid_site_id").Inc()
 			}
 		}
 	}
@@ -260,6 +256,7 @@ func (a *App) finalFlush(batch []model.Event) {
 
 	start := time.Now()
 	if err := a.chStorage.InsertEvents(flushCtx, batch); err != nil {
+		metrics.SystemErrors.WithLabelValues("clickhouse_insert").Inc()
 		slog.Error("clickhouse_insert_failed", "error", err, "batch_size", len(batch))
 	} else {
 		metrics.ClickHouseInsertDuration.Observe(time.Since(start).Seconds())

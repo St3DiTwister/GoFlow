@@ -178,6 +178,17 @@ services:
       - admin-service
     networks:
       - goflow-net
+#
+#  load-tester:
+#    image: grafana/k6
+#    container_name: goflow-load-tester
+#    volumes:
+#      - ../scripts:/scripts
+#    networks:
+#      - goflow-net
+#    command: run /scripts/stress-test.js
+#    depends_on:
+#      - gateway
 
 volumes:
   clickhouse_data:

@@ -62,10 +62,19 @@ func main() {
 		adminAddr = "localhost:50051"
 	}
 
+	podName := os.Getenv("HOSTNAME")
+	if podName == "" {
+		podName = "local"
+	}
+
 	go func() {
-		http.Handle("/metrics", promhttp.Handler())
+		mux := http.NewServeMux()
+
+		mux.Handle("/metrics", promhttp.Handler())
+
 		slog.Info("metrics_server_started", "port", metricsPort)
-		if err := http.ListenAndServe(":"+metricsPort, nil); err != nil {
+
+		if err := http.ListenAndServe(":"+metricsPort, mux); err != nil {
 			slog.Error("metrics_server_failed", "error", err)
 		}
 	}()
@@ -80,11 +89,11 @@ func main() {
 	eventsChan := make(chan model.Event, 1000)
 
 	app.runCacheUpdater(ctx, &wg)
-	app.runClickHouseBatcher(ctx, &wg, eventsChan)
+	app.runClickHouseBatcher(ctx, &wg, eventsChan, podName)
 
 	slog.Info("worker_started", "topic", os.Getenv("KAFKA_TOPIC"))
 
-	app.startConsumption(ctx, eventsChan)
+	app.startConsumption(ctx, eventsChan, podName)
 
 	slog.Info("shutdown_initiated")
 	close(eventsChan)
@@ -180,7 +189,7 @@ func (a *App) updateSitesCache(ctx context.Context) error {
 	return nil
 }
 
-func (a *App) runClickHouseBatcher(_ context.Context, wg *sync.WaitGroup, ch <-chan model.Event) {
+func (a *App) runClickHouseBatcher(_ context.Context, wg *sync.WaitGroup, ch <-chan model.Event, podName string) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -192,18 +201,18 @@ func (a *App) runClickHouseBatcher(_ context.Context, wg *sync.WaitGroup, ch <-c
 			select {
 			case event, ok := <-ch:
 				if !ok {
-					a.finalFlush(batch)
+					a.finalFlush(batch, podName)
 					return
 				}
 				batch = append(batch, event)
 				if len(batch) >= 1000 {
-					a.finalFlush(batch)
+					a.finalFlush(batch, podName)
 					batch = batch[:0]
 					ticker.Reset(5 * time.Second)
 				}
 			case <-ticker.C:
 				if len(batch) > 0 {
-					a.finalFlush(batch)
+					a.finalFlush(batch, podName)
 					batch = batch[:0]
 				}
 			}
@@ -211,7 +220,7 @@ func (a *App) runClickHouseBatcher(_ context.Context, wg *sync.WaitGroup, ch <-c
 	}()
 }
 
-func (a *App) startConsumption(ctx context.Context, eventsChan chan<- model.Event) {
+func (a *App) startConsumption(ctx context.Context, eventsChan chan<- model.Event, podName string) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -227,7 +236,7 @@ func (a *App) startConsumption(ctx context.Context, eventsChan chan<- model.Even
 
 			var event model.Event
 			if err := json.Unmarshal(msg.Value, &event); err != nil {
-				metrics.RejectedEvents.WithLabelValues("malformed_json").Inc()
+				metrics.RejectedEvents.WithLabelValues("malformed_json", podName).Inc()
 				slog.Error("json_unmarshal_error", "error", err, "payload", string(msg.Value))
 				continue
 			}
@@ -237,16 +246,16 @@ func (a *App) startConsumption(ctx context.Context, eventsChan chan<- model.Even
 			a.sitesMu.RUnlock()
 
 			if isValid {
-				metrics.ProcessedEvents.Inc()
+				metrics.ProcessedEvents.WithLabelValues(podName).Inc()
 				eventsChan <- event
 			} else {
-				metrics.RejectedEvents.WithLabelValues("invalid_site_id").Inc()
+				metrics.RejectedEvents.WithLabelValues("invalid_site_id", podName).Inc()
 			}
 		}
 	}
 }
 
-func (a *App) finalFlush(batch []model.Event) {
+func (a *App) finalFlush(batch []model.Event, podName string) {
 	if len(batch) == 0 {
 		return
 	}
@@ -256,10 +265,10 @@ func (a *App) finalFlush(batch []model.Event) {
 
 	start := time.Now()
 	if err := a.chStorage.InsertEvents(flushCtx, batch); err != nil {
-		metrics.SystemErrors.WithLabelValues("clickhouse_insert").Inc()
+		metrics.SystemErrors.WithLabelValues("clickhouse_insert", podName).Inc()
 		slog.Error("clickhouse_insert_failed", "error", err, "batch_size", len(batch))
 	} else {
-		metrics.ClickHouseInsertDuration.Observe(time.Since(start).Seconds())
+		metrics.ClickHouseInsertDuration.WithLabelValues(podName).Observe(time.Since(start).Seconds())
 		slog.Info("batch_flushed", "count", len(batch))
 	}
 }

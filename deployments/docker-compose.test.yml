@@ -1,0 +1,7 @@
+services:
+  load-tester:
+    image: grafana/k6:latest
+    container_name: goflow-load-tester
+    volumes:
+      - ../scripts:/scripts
+    command: run /scripts/stress-test.js

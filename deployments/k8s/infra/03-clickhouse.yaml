@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clickhouse
+spec:
+  selector:
+    matchLabels:
+      app: clickhouse
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+    spec:
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:23.8-alpine
+          env:
+            - name: CLICKHOUSE_USER
+              value: "admin"
+            - name: CLICKHOUSE_PASSWORD
+              value: "admin"
+            - name: CLICKHOUSE_DB
+              value: "goflow"
+          ports:
+            - containerPort: 8123
+            - containerPort: 9000
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              /entrypoint.sh -- --listen_host=0.0.0.0
+          volumeMounts:
+            - name: ch-storage
+              mountPath: /var/lib/clickhouse
+      volumes:
+        - name: ch-storage
+          persistentVolumeClaim:
+            claimName: clickhouse-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+spec:
+  selector:
+    app: clickhouse
+  ports:
+    - name: http
+      port: 8123
+      targetPort: 8123
+    - name: native
+      port: 9000
+      targetPort: 9000

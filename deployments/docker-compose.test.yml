@@ -1,7 +1,15 @@
+name: goflow-stress-test
 services:
   load-tester:
     image: grafana/k6:latest
     container_name: goflow-load-tester
     volumes:
       - ../scripts:/scripts
+    networks:
+      - goflow-net
     command: run /scripts/stress-test.js
+
+networks:
+  goflow-net:
+    name: goflow_goflow-net
+    external: true

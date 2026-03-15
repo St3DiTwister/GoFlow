@@ -86,7 +86,7 @@ func main() {
 	}
 
 	var wg sync.WaitGroup
-	eventsChan := make(chan model.Event, 1000)
+	eventsChan := make(chan model.Event, 7000)
 
 	app.runCacheUpdater(ctx, &wg)
 	app.runClickHouseBatcher(ctx, &wg, eventsChan, podName)
@@ -193,7 +193,7 @@ func (a *App) runClickHouseBatcher(_ context.Context, wg *sync.WaitGroup, ch <-c
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		batch := make([]model.Event, 0, 1000)
+		batch := make([]model.Event, 0, 7000)
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 
@@ -205,7 +205,7 @@ func (a *App) runClickHouseBatcher(_ context.Context, wg *sync.WaitGroup, ch <-c
 					return
 				}
 				batch = append(batch, event)
-				if len(batch) >= 1000 {
+				if len(batch) >= 7000 {
 					a.finalFlush(batch, podName)
 					batch = batch[:0]
 					ticker.Reset(5 * time.Second)

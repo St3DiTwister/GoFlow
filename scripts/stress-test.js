@@ -37,7 +37,7 @@ export default function () {
         },
     };
 
-    const res = http.post('http://localhost:8080/track', payload, params);
+    const res = http.post('http://gateway:8080/track', payload, params);
 
     check(res, { 'status is 202': (r) => r.status === 202 });
 

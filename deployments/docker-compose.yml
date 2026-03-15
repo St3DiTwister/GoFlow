@@ -26,6 +26,7 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_NUM_PARTITIONS: 10
     networks:
       - goflow-net
 
@@ -146,7 +147,8 @@ services:
     build:
       context: ..
       dockerfile: deployments/worker.Dockerfile
-    container_name: goflow-worker
+    deploy:
+      replicas: 5
     environment:
       - KAFKA_BROKER=${KAFKA_BROKER}
       - KAFKA_TOPIC=${KAFKA_TOPIC}
@@ -178,17 +180,7 @@ services:
       - admin-service
     networks:
       - goflow-net
-#
-#  load-tester:
-#    image: grafana/k6
-#    container_name: goflow-load-tester
-#    volumes:
-#      - ../scripts:/scripts
-#    networks:
-#      - goflow-net
-#    command: run /scripts/stress-test.js
-#    depends_on:
-#      - gateway
+
 
 volumes:
   clickhouse_data:
